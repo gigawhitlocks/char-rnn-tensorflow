@@ -16,6 +16,12 @@ from six import text_type
 from six.moves import cPickle
 from websocket import create_connection
 
+from sumy.parsers.plaintext import PlaintextParser
+from sumy.nlp.tokenizers import Tokenizer
+from sumy.summarizers.random import RandomSummarizer as Summarizer
+from sumy.nlp.stemmers import Stemmer
+from sumy.utils import get_stop_words
+
 import bottle
 from bottle import post, run
 from model import Model
@@ -24,6 +30,9 @@ SITE_URL = os.getenv("SHAMAN_SITEURL", "")
 BOTNAME = os.getenv("SHAMAN_NAME", "shaman")
 BOTPASSWORD = os.getenv("SHAMAN_PASSWORD", "shaman")
 BOTNAME_NOCASE = re.compile(re.escape(BOTNAME), re.IGNORECASE)
+
+SAMPLE_SIZE = 1000 # size of RNN sample
+LANGUAGE = "english"
 
 if SITE_URL == "":
     print("Set SHAMAN_SITEURL")
@@ -35,8 +44,11 @@ if BOTPASSWORD == "":
 print("Connecting to.. {}".format(SITE_URL))
 RC = RocketChatAPI(settings={'username': BOTNAME, 'password': BOTPASSWORD,
                              'domain': 'https://' + SITE_URL})
+print("Connected")
 
+print("Getting room list..")
 ROOMS = {r['name']: r['id'] for r in RC.get_public_rooms()}
+print("done")
 
 @post('/')
 def index():
@@ -98,14 +110,19 @@ def index():
             """Apply rules of thumb to generated text to make it appear more real
             Also clean the output and do things like prevent it from tagging people
             """
-            saying = saying.split("\n")
-            idx = random.randint(0, len(saying)-1)
-
-            saying = saying[idx]
+            # summarize the input
+            print(saying)
+            tokenizer = Tokenizer(LANGUAGE)
+            tokenizer._sentence_tokenizer.PUNCTUATION += ("\n",)
+            parser = PlaintextParser.from_string(saying, tokenizer)
+            stemmer = Stemmer(LANGUAGE)
+            summarizer = Summarizer(stemmer)
+            summarizer.stop_words = get_stop_words(LANGUAGE)
+            saying = " ".join([str(s) for s in summarizer(parser.document, 1)])
 
             # the first line of output includes the input
             # so we need to trim it
-            if idx == 0 and inp != "I ":
+            if inp != "I ":
                 saying = saying[len(inp)+1:]
 
             # don't tag people
@@ -146,7 +163,7 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--save_dir', type=str, default='save',
                         help='model directory to store checkpointed models')
-    parser.add_argument('-n', type=int, default=500,
+    parser.add_argument('-n', type=int, default=1000,
                         help='number of characters to sample')
     parser.add_argument('--prime', type=text_type, default=u' ',
                         help='prime text')
@@ -175,7 +192,7 @@ def sample(primer):
             return model.sample(sess,
                                 chars,
                                 vocab,
-                                500, primer,
+                                SAMPLE_SIZE, primer,
                                 args.sample).encode('utf-8').decode('utf8')
 
 
@@ -183,8 +200,11 @@ def init(args):
     with open(os.path.join(args.save_dir, 'config.pkl'), 'rb') as f:
         saved_args = cPickle.load(f)
 
+    print("Loading saved model")
     global model
     model = Model(saved_args, training=False)
+
+    print("done")
 
 if __name__ == '__main__':
     main()
